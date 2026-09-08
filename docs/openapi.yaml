@@ -1,0 +1,146 @@
+openapi: 3.0.3
+info:
+  title: BIT Transaksi Service API
+  description: Transaksi service API for applications, sections, reviews, interview scoring, and decisions.
+  version: 0.1.0
+paths:
+  /health/live:
+    get:
+      summary: Liveness probe
+      responses:
+        '200': { description: OK }
+  /health/ready:
+    get:
+      summary: Readiness probe
+      responses:
+        '200': { description: Ready }
+        '503': { description: Unhealthy }
+  /api/v1/applications:
+    post:
+      summary: Create scholarship application draft
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [programId]
+              properties:
+                programId: { type: string }
+      responses:
+        '201': { description: Application draft created }
+        '409': { description: Conflict / idempotent retry result }
+    get:
+      summary: List applications (own for Peserta, all for Verifikator/Admin)
+      responses:
+        '200': { description: Applications list }
+  /api/v1/applications/{id}:
+    get:
+      summary: Get application details including all sections and bindings
+      responses:
+        '200': { description: Application details }
+        '403': { description: Forbidden }
+        '404': { description: Not found }
+  /api/v1/applications/{id}/sections/{section}:
+    patch:
+      summary: Save form section (1: personal, 2: education, 3: documents, 4: consent)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: section
+          in: path
+          required: true
+          schema: { type: string, enum: [personal, education, consent] }
+      responses:
+        '200': { description: Section saved, version incremented }
+        '409': { description: Optimistic lock failure / version mismatch }
+  /api/v1/applications/{id}/document-reservations:
+    post:
+      summary: Create upload reservation token for a specific document requirement
+      responses:
+        '201': { description: Reservation created with 5-minute TTL }
+  /api/v1/applications/{id}/submit:
+    post:
+      summary: Final submit application
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema: { type: string }
+      responses:
+        '200': { description: Application submitted and locked }
+        '422': { description: Incomplete data or unverified documents }
+  /api/v1/applications/{id}/resubmit:
+    post:
+      summary: Resubmit revised application
+      responses:
+        '200': { description: Application resubmitted and locked }
+  /api/v1/reviews:
+    get:
+      summary: List applications for administrative verification
+      responses:
+        '200': { description: Verification queue }
+  /api/v1/applications/{id}/administration-decisions:
+    post:
+      summary: Submit administrative verification decision (PASSED, REVISION, REJECTED)
+      responses:
+        '200': { description: Decision recorded }
+        '409': { description: Concurrent decision conflict }
+  /api/v1/interviews:
+    get:
+      summary: List applications passed administration for interview scoring
+      responses:
+        '200': { description: Interview list }
+  /api/v1/applications/{id}/interview:
+    put:
+      summary: Save interview score draft
+      responses:
+        '200': { description: Score draft saved }
+  /api/v1/applications/{id}/interview/finalize:
+    post:
+      summary: Finalize interview decision (PASSED -> ACCEPTED, FAILED -> NOT_ACCEPTED)
+      responses:
+        '200': { description: Interview finalized, final status updated }
+  /api/v1/applications/{id}/acceptance-letter:
+    get:
+      summary: Generate acceptance letter PDF (M feature)
+      responses:
+        '200': { description: PDF stream }
+        '403': { description: Available only if ACCEPTED }
+  /api/v1/applications/{id}/confirmation:
+    post:
+      summary: Candidate confirms or withdraws acceptance
+      responses:
+        '200': { description: Attendance confirmation recorded }
+  /api/v1/reports/summary:
+    get:
+      summary: Summary statistics for admin dashboard
+      responses:
+        '200': { description: Status distribution and metrics }
+  /api/v1/reports/results.xlsx:
+    get:
+      summary: Export results to Excel spreadsheet
+      responses:
+        '200': { description: XLSX file download }
+  /internal/v1/transaksi/document-reservations/{id}/validate:
+    get:
+      summary: Internal validation of reservation by Dokumen service
+      responses:
+        '200': { description: Reservation is valid }
+  /internal/v1/transaksi/document-reservations/{id}/commit:
+    post:
+      summary: Internal binding commit after clean scan
+      responses:
+        '200': { description: Document bound to application }
+  /internal/v1/transaksi/document-access/check:
+    post:
+      summary: Internal check whether actor has permission to read/download document
+      responses:
+        '200': { description: Access granted }
+        '403': { description: Access denied }
