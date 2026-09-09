@@ -268,4 +268,33 @@ export class ApplicationController {
       next(err);
     }
   };
+
+  confirm = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Tidak terautentikasi' } });
+        return;
+      }
+
+      const { status, notes } = req.body;
+      if (!['CONFIRMED', 'WITHDRAWN'].includes(status)) {
+        res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Status harus CONFIRMED atau WITHDRAWN' } });
+        return;
+      }
+
+      const result = await this.service.confirmApplication(
+        req.params.id as string,
+        { id: req.user.id, role: req.user.role },
+        { status, notes }
+      );
+
+      res.status(200).json({
+        message: status === 'CONFIRMED' ? 'Konfirmasi kehadiran berhasil dicatat' : 'Pengunduran diri berhasil dicatat',
+        data: result,
+        requestId: req.headers['x-request-id'] || 'unknown'
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
 }

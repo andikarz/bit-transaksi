@@ -149,6 +149,10 @@ export class ApplicationRepository {
        ORDER BY i.created_at DESC LIMIT 1`,
       [id]
     );
+    const [confRows] = await pool.execute<RowDataPacket[]>(
+      `SELECT status, notes, confirmed_at FROM confirmations WHERE application_id = ? LIMIT 1`,
+      [id]
+    );
 
     const snapshot = typeof app.program_snapshot === 'string'
       ? JSON.parse(app.program_snapshot)
@@ -187,6 +191,11 @@ export class ApplicationRepository {
         notes: (scoreRows[0] as any).notes || null,
         isFinalized: Boolean((scoreRows[0] as any).is_finalized),
         createdAt: (scoreRows[0] as any).created_at ? new Date((scoreRows[0] as any).created_at).toISOString() : null
+      } : null,
+      confirmation: confRows.length > 0 ? {
+        status: (confRows[0] as any).status,
+        notes: (confRows[0] as any).notes || null,
+        confirmedAt: (confRows[0] as any).confirmed_at ? new Date((confRows[0] as any).confirmed_at).toISOString() : null
       } : null
     };
   }
@@ -704,5 +713,26 @@ export class ApplicationRepository {
         registrationCode: app.registration_code
       };
     });
+  }
+
+  // ── Save Attendance Confirmation (Fase 6 / FE-06) ─────────────
+  async saveConfirmation(
+    applicationId: string,
+    status: 'CONFIRMED' | 'WITHDRAWN',
+    notes?: string
+  ): Promise<{ status: string; confirmedAt: string }> {
+    const id = uuidv4();
+    const confirmedAt = new Date().toISOString();
+    await pool.execute(
+      `INSERT INTO confirmations (id, application_id, status, notes, confirmed_at)
+       VALUES (?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE status = VALUES(status), notes = VALUES(notes), confirmed_at = NOW()`,
+      [id, applicationId, status, notes || null]
+    );
+    await pool.execute(
+      `UPDATE applications SET confirmation_status = ?, updated_at = NOW() WHERE id = ?`,
+      [status, applicationId]
+    );
+    return { status, confirmedAt };
   }
 }

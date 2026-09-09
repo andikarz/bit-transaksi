@@ -17,3 +17,4 @@ applicationRouter.post('/:id/document-reservations', controller.createReservatio
 applicationRouter.post('/:id/reservations', controller.createReservation);
 applicationRouter.post('/:id/submit', controller.submit);
 applicationRouter.post('/:id/resubmit', controller.resubmit);
+applicationRouter.post('/:id/confirmation', controller.confirm);

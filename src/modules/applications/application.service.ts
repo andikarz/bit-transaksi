@@ -315,6 +315,37 @@ export class ApplicationService {
     };
   }
 
+  // ── 12. Confirm Attendance / Daftar Ulang (Fase 6 / FE-06) ──
+  async confirmApplication(
+    applicationId: string,
+    user: { id: string; role: string },
+    dto: { status: 'CONFIRMED' | 'WITHDRAWN'; notes?: string }
+  ): Promise<{ status: string; confirmedAt: string }> {
+    const app = await this.repo.findDetailById(applicationId);
+    if (!app) {
+      const err = new Error('Permohonan tidak ditemukan') as any;
+      err.statusCode = 404;
+      err.code = 'APPLICATION_NOT_FOUND';
+      throw err;
+    }
+
+    if (app.applicantId !== user.id) {
+      const err = new Error('Anda bukan pemilik permohonan ini') as any;
+      err.statusCode = 403;
+      err.code = 'FORBIDDEN';
+      throw err;
+    }
+
+    if (app.finalStatus !== 'ACCEPTED' && app.interviewStatus !== 'PASSED') {
+      const err = new Error('Konfirmasi daftar ulang hanya dapat dilakukan oleh peserta yang telah dinyatakan LULUS / DITERIMA') as any;
+      err.statusCode = 400;
+      err.code = 'NOT_ELIGIBLE_FOR_CONFIRMATION';
+      throw err;
+    }
+
+    return this.repo.saveConfirmation(applicationId, dto.status, dto.notes);
+  }
+
   // Guard: ensures application is in DRAFT/REVISION and belongs to user
   private async verifyDraftOwnership(applicationId: string, userId: string): Promise<void> {
     const app = await this.repo.findDetailById(applicationId);

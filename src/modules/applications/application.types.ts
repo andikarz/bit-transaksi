@@ -111,6 +111,11 @@ export interface ApplicationDetailResponse {
     isFinalized: boolean;
     createdAt: string | null;
   } | null;
+  confirmation?: {
+    status: string;
+    notes: string | null;
+    confirmedAt: string | null;
+  } | null;
 }
 
 export interface CreateDraftDto {
