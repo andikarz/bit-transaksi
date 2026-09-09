@@ -721,6 +721,7 @@ export class ApplicationRepository {
     status: 'CONFIRMED' | 'WITHDRAWN',
     notes?: string
   ): Promise<{ status: string; confirmedAt: string }> {
+    const pool = getPool();
     const id = uuidv4();
     const confirmedAt = new Date().toISOString();
     await pool.execute(
