@@ -94,6 +94,20 @@ export class ApplicationRepository {
     return rows.length > 0 ? (rows[0] as ApplicationRecord) : null;
   }
 
+  // ── Find Latest Application for Applicant (Any Status) ────────
+  async findLatestApplication(applicantId: string): Promise<ApplicationRecord | null> {
+    const pool = getPool();
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT * FROM applications
+       WHERE applicant_id = ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [applicantId]
+    );
+
+    return rows.length > 0 ? (rows[0] as ApplicationRecord) : null;
+  }
+
   // ── Find Full Application Detail with All Sections ───────────
   async findDetailById(id: string): Promise<ApplicationDetailResponse | null> {
     const pool = getPool();
@@ -356,6 +370,310 @@ export class ApplicationRepository {
       );
 
       return { success: true, newVersion: nextVersion };
+    });
+  }
+
+  // ── Create Document Reservation (Fase 5) ─────────────────────
+  async createDocumentReservation(
+    applicationId: string,
+    reqCode: string,
+    reqName: string,
+    allowedTypes: string[],
+    maxBytes: number,
+    appVersion: number
+  ): Promise<any> {
+    const pool = getPool();
+    const reservationId = uuidv4();
+    await pool.execute(
+      `INSERT INTO document_reservations (
+        id, application_id, requirement_type_code, requirement_type_name,
+        allowed_types, max_bytes, application_version, status, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'RESERVED', DATE_ADD(NOW(), INTERVAL 5 MINUTE))`,
+      [reservationId, applicationId, reqCode, reqName, JSON.stringify(allowedTypes), maxBytes, appVersion]
+    );
+
+    return {
+      id: reservationId,
+      applicationId,
+      requirementTypeCode: reqCode,
+      requirementTypeName: reqName,
+      allowedTypes,
+      maxBytes,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString()
+    };
+  }
+
+  // ── Find Reservation by ID (Internal Validation) ─────────────
+  async findReservationById(reservationId: string): Promise<any | null> {
+    const pool = getPool();
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT r.*, a.registration_code, a.applicant_id, a.submission_status
+       FROM document_reservations r
+       JOIN applications a ON a.id = r.application_id
+       WHERE r.id = ?`,
+      [reservationId]
+    );
+
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      id: r.id,
+      applicationId: r.application_id,
+      applicantId: r.applicant_id,
+      registrationCode: r.registration_code,
+      requirementTypeCode: r.requirement_type_code,
+      requirementTypeName: r.requirement_type_name,
+      allowedTypes: typeof r.allowed_types === 'string' ? JSON.parse(r.allowed_types) : r.allowed_types,
+      maxBytes: r.max_bytes,
+      status: r.status,
+      submissionStatus: r.submission_status,
+      isExpired: new Date(r.expires_at) < new Date()
+    };
+  }
+
+  // ── Commit Document Reservation & Binding (Internal) ─────────
+  async commitReservation(
+    reservationId: string,
+    docData: {
+      documentId: string;
+      originalFilename: string;
+      mimeType: string;
+      fileSize: number;
+      sha256Hash: string;
+      storagePath: string;
+      isClean: boolean;
+    }
+  ): Promise<any> {
+    return withTransaction(async (conn) => {
+      const [resRows] = await conn.execute<RowDataPacket[]>(
+        `SELECT * FROM document_reservations WHERE id = ? FOR UPDATE`,
+        [reservationId]
+      );
+
+      if (resRows.length === 0) {
+        throw new Error('Reservation tidak ditemukan');
+      }
+
+      const res = resRows[0];
+      if (res.status !== 'RESERVED') {
+        throw new Error(`Reservation dalam status '${res.status}'`);
+      }
+
+      // 1. Mark reservation COMMITTED
+      await conn.execute(
+        `UPDATE document_reservations SET status = 'COMMITTED' WHERE id = ?`,
+        [reservationId]
+      );
+
+      // 2. Upsert document_bindings
+      const bindingId = uuidv4();
+      await conn.execute(
+        `INSERT INTO document_bindings (
+          id, application_id, requirement_type_code, requirement_type_name,
+          document_id, original_filename, mime_type, file_size, sha256_hash, storage_path, is_clean, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        ON DUPLICATE KEY UPDATE
+          document_id = VALUES(document_id),
+          original_filename = VALUES(original_filename),
+          mime_type = VALUES(mime_type),
+          file_size = VALUES(file_size),
+          sha256_hash = VALUES(sha256_hash),
+          storage_path = VALUES(storage_path),
+          is_clean = VALUES(is_clean),
+          version = version + 1`,
+        [
+          bindingId,
+          res.application_id,
+          res.requirement_type_code,
+          res.requirement_type_name,
+          docData.documentId,
+          docData.originalFilename,
+          docData.mimeType,
+          docData.fileSize,
+          docData.sha256Hash,
+          docData.storagePath,
+          docData.isClean
+        ]
+      );
+
+      return { committed: true, bindingId, applicationId: res.application_id };
+    });
+  }
+
+  // ── Submit Application (AT-08) ────────────────────────────────
+  async submitApplication(
+    applicationId: string,
+    expectedVersion?: number,
+    applicant?: { nik?: string; fullName?: string; email?: string }
+  ): Promise<{ success: boolean; newVersion?: number; registrationCode?: string }> {
+    return withTransaction(async (conn) => {
+      const [appRows] = await conn.execute<RowDataPacket[]>(
+        `SELECT version, registration_code, submission_status, program_snapshot FROM applications WHERE id = ? FOR UPDATE`,
+        [applicationId]
+      );
+
+      if (appRows.length === 0) {
+        throw new Error('Permohonan tidak ditemukan');
+      }
+
+      const app = appRows[0];
+      if (expectedVersion !== undefined && app.version !== expectedVersion) {
+        return { success: false };
+      }
+
+      const nextVersion = (app.version as number) + 1;
+
+      // 1. Verify Personal Details
+      const [pRows] = await conn.execute<RowDataPacket[]>(
+        `SELECT id, nik, full_name, email FROM personal_details WHERE application_id = ?`,
+        [applicationId]
+      );
+      if (pRows.length === 0) {
+        const err = new Error('Data diri belum lengkap') as any;
+        err.statusCode = 422;
+        err.code = 'INCOMPLETE_PERSONAL_DETAILS';
+        throw err;
+      }
+
+      let currentNik = pRows[0].nik;
+      let currentFullName = pRows[0].full_name;
+
+      if (!currentNik && applicant?.nik) {
+        currentNik = applicant.nik;
+        await conn.execute(`UPDATE personal_details SET nik = ? WHERE application_id = ?`, [currentNik, applicationId]);
+      }
+      if (!currentFullName && applicant?.fullName) {
+        currentFullName = applicant.fullName;
+        await conn.execute(`UPDATE personal_details SET full_name = ? WHERE application_id = ?`, [currentFullName, applicationId]);
+      }
+      if (!pRows[0].email && applicant?.email) {
+        await conn.execute(`UPDATE personal_details SET email = ? WHERE application_id = ?`, [applicant.email, applicationId]);
+      }
+
+      if (!currentNik || !currentFullName) {
+        const err = new Error('Data diri belum lengkap') as any;
+        err.statusCode = 422;
+        err.code = 'INCOMPLETE_PERSONAL_DETAILS';
+        throw err;
+      }
+
+      // 2. Verify Education Details
+      const [eRows] = await conn.execute<RowDataPacket[]>(
+        `SELECT id, education_level, institution_name FROM education_details WHERE application_id = ?`,
+        [applicationId]
+      );
+      if (eRows.length === 0 || !eRows[0].education_level || !eRows[0].institution_name) {
+        const err = new Error('Data pendidikan belum lengkap') as any;
+        err.statusCode = 422;
+        err.code = 'INCOMPLETE_EDUCATION_DETAILS';
+        throw err;
+      }
+
+      // 3. Verify Consent
+      const [cRows] = await conn.execute<RowDataPacket[]>(
+        `SELECT id FROM consents WHERE application_id = ?`,
+        [applicationId]
+      );
+      if (cRows.length === 0) {
+        const err = new Error('Pernyataan persetujuan belum disetujui') as any;
+        err.statusCode = 422;
+        err.code = 'INCOMPLETE_CONSENT';
+        throw err;
+      }
+
+      const snapshot = typeof app.program_snapshot === 'string' ? JSON.parse(app.program_snapshot) : app.program_snapshot;
+      const requirements: any[] = snapshot?.requirements || [];
+      const mandatoryReqs = requirements.filter((r: any) => r.isRequired || r.isMandatory || r.is_mandatory || r.is_required);
+
+      const [bindings] = await conn.execute<RowDataPacket[]>(
+        `SELECT requirement_type_code, is_clean FROM document_bindings WHERE application_id = ? AND is_clean = TRUE`,
+        [applicationId]
+      );
+      const boundCodes = new Set(bindings.map((b: any) => b.requirement_type_code));
+
+      for (const req of mandatoryReqs) {
+        const code = req.requirementTypeCode || req.code || req.requirement_type_code;
+        if (!boundCodes.has(code)) {
+          const err = new Error(`Dokumen wajib '${req.name || code}' belum diunggah atau tidak bersih`) as any;
+          err.statusCode = 422;
+          err.code = 'MISSING_MANDATORY_DOCUMENT';
+          throw err;
+        }
+      }
+
+      // 5. Update application status
+      await conn.execute(
+        `UPDATE applications SET
+          submission_status = 'SUBMITTED',
+          administration_status = 'PENDING',
+          submitted_at = NOW(),
+          version = ?,
+          updated_at = NOW()
+         WHERE id = ?`,
+        [nextVersion, applicationId]
+      );
+
+      // 6. Record status history
+      await conn.execute(
+        `INSERT INTO status_history (
+          id, application_id, dimension, previous_value, next_value, reason, application_version
+        ) VALUES (?, ?, 'SUBMISSION', 'DRAFT', 'SUBMITTED', 'Pendaftaran berhasil dikirim oleh peserta', ?)`,
+        [uuidv4(), applicationId, nextVersion]
+      );
+
+      return {
+        success: true,
+        newVersion: nextVersion,
+        registrationCode: app.registration_code
+      };
+    });
+  }
+
+  // ── Resubmit Application (Fase 6) ─────────────────────────────
+  async resubmitApplication(
+    applicationId: string,
+    expectedVersion?: number
+  ): Promise<{ success: boolean; newVersion?: number; registrationCode?: string }> {
+    return withTransaction(async (conn) => {
+      const [appRows] = await conn.execute<RowDataPacket[]>(
+        `SELECT version, registration_code, submission_status FROM applications WHERE id = ? FOR UPDATE`,
+        [applicationId]
+      );
+
+      if (appRows.length === 0) {
+        throw new Error('Permohonan tidak ditemukan');
+      }
+
+      const app = appRows[0];
+      if (expectedVersion !== undefined && app.version !== expectedVersion) {
+        return { success: false };
+      }
+
+      const nextVersion = (app.version as number) + 1;
+
+      await conn.execute(
+        `UPDATE applications SET
+          submission_status = 'RESUBMITTED',
+          administration_status = 'PENDING',
+          submitted_at = NOW(),
+          version = ?,
+          updated_at = NOW()
+         WHERE id = ?`,
+        [nextVersion, applicationId]
+      );
+
+      await conn.execute(
+        `INSERT INTO status_history (
+          id, application_id, dimension, previous_value, next_value, reason, application_version
+        ) VALUES (?, ?, 'SUBMISSION', 'REVISION_REQUIRED', 'RESUBMITTED', 'Perbaikan pendaftaran dikirim ulang oleh peserta', ?)`,
+        [uuidv4(), applicationId, nextVersion]
+      );
+
+      return {
+        success: true,
+        newVersion: nextVersion,
+        registrationCode: app.registration_code
+      };
     });
   }
 }

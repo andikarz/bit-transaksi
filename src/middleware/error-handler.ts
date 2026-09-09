@@ -11,6 +11,18 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
     timestamp: new Date().toISOString(),
   }));
 
+  if (err.name === 'ZodError' || (err as any).issues) {
+    res.status(400).json({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Validasi data gagal: ' + ((err as any).issues?.[0]?.message || err.message),
+        issues: (err as any).issues,
+      },
+      requestId,
+    });
+    return;
+  }
+
   const statusCode = (err as any).statusCode || 500;
   const code = (err as any).code || 'INTERNAL_ERROR';
 

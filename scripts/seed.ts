@@ -1,5 +1,5 @@
 import mysql from 'mysql2/promise';
-import 'dotenv/config';
+try { (process as any).loadEnvFile?.(); } catch {}
 
 async function run() {
   console.log('Transaksi database seed — initial state ready (no hardcoded transactions needed for production).');

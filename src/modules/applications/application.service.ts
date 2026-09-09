@@ -36,10 +36,10 @@ export class ApplicationService {
       }
     }
 
-    // Check if applicant already has an active draft for any program (or this program)
-    const existingDraft = await this.repo.findActiveDraft(applicant.id);
-    if (existingDraft && existingDraft.program_id === dto.programId) {
-      const detail = await this.repo.findDetailById(existingDraft.id);
+    // Check if applicant already has an existing application (draft or submitted)
+    const existingApp = await this.repo.findLatestApplication(applicant.id);
+    if (existingApp) {
+      const detail = await this.repo.findDetailById(existingApp.id);
       if (detail) {
         if (idempotencyKey) {
           await this.repo.saveIdempotency(
@@ -101,11 +101,11 @@ export class ApplicationService {
     return { data: detail };
   }
 
-  // ── 2. Get Active Draft for Current Applicant ────────────────
+  // ── 2. Get Active or Submitted Application for Current Applicant ──
   async getMyActiveDraft(applicantId: string): Promise<ApplicationDetailResponse | null> {
-    const draft = await this.repo.findActiveDraft(applicantId);
-    if (!draft) return null;
-    return this.repo.findDetailById(draft.id);
+    const app = await this.repo.findLatestApplication(applicantId);
+    if (!app) return null;
+    return this.repo.findDetailById(app.id);
   }
 
   // ── 3. Get Application Detail with Access Guard ──────────────
@@ -189,6 +189,130 @@ export class ApplicationService {
     }
 
     return { version: result.newVersion! };
+  }
+
+  // ── 7. Create Document Reservation (Fase 5) ──────────────────
+  async createDocumentReservation(
+    applicationId: string,
+    user: { id: string; role: string },
+    reqCode: string
+  ): Promise<any> {
+    await this.verifyDraftOwnership(applicationId, user.id);
+    const detail = await this.repo.findDetailById(applicationId);
+    if (!detail) {
+      throw new Error('Permohonan tidak ditemukan');
+    }
+
+    const snapshot = detail.programSnapshot;
+    const reqs: any[] = snapshot.requirements || [];
+    const matched = reqs.find((r: any) => (r.requirementTypeCode || r.code || r.requirement_type_code) === reqCode);
+
+    const reqName = matched ? (matched.name || reqCode) : reqCode;
+    const allowedTypes = matched && matched.allowedTypes ? matched.allowedTypes : ['application/pdf', 'image/jpeg', 'image/png'];
+    const maxBytes = matched && matched.maxBytes ? matched.maxBytes : 2097152;
+
+    return this.repo.createDocumentReservation(
+      applicationId,
+      reqCode,
+      reqName,
+      allowedTypes,
+      maxBytes,
+      detail.version
+    );
+  }
+
+  // ── 8. Validate Document Reservation (Internal) ──────────────
+  async validateDocumentReservation(reservationId: string): Promise<any> {
+    const res = await this.repo.findReservationById(reservationId);
+    if (!res) {
+      const err = new Error('Reservation tidak ditemukan') as any;
+      err.statusCode = 404;
+      err.code = 'RESERVATION_NOT_FOUND';
+      throw err;
+    }
+
+    if (res.isExpired) {
+      const err = new Error('Reservation telah kedaluwarsa') as any;
+      err.statusCode = 410;
+      err.code = 'RESERVATION_EXPIRED';
+      throw err;
+    }
+
+    if (res.status !== 'RESERVED') {
+      const err = new Error(`Reservation telah digunakan (status: ${res.status})`) as any;
+      err.statusCode = 409;
+      err.code = 'RESERVATION_ALREADY_USED';
+      throw err;
+    }
+
+    return res;
+  }
+
+  // ── 9. Commit Document Reservation (Internal) ────────────────
+  async commitDocumentReservation(reservationId: string, docData: any): Promise<any> {
+    return this.repo.commitReservation(reservationId, docData);
+  }
+
+  // ── 10. Submit Application (AT-08) ───────────────────────────
+  async submitApplication(
+    applicationId: string,
+    user: { id: string; role: string; nik?: string; fullName?: string; email?: string },
+    expectedVersion?: number
+  ): Promise<{ registrationCode: string; version: number }> {
+    await this.verifyDraftOwnership(applicationId, user.id);
+
+    const result = await this.repo.submitApplication(applicationId, expectedVersion, user);
+    if (!result.success) {
+      const err = new Error('Konflik versi: Data permohonan telah diubah oleh sesi lain') as any;
+      err.statusCode = 409;
+      err.code = 'CONCURRENCY_CONFLICT';
+      throw err;
+    }
+
+    return {
+      registrationCode: result.registrationCode!,
+      version: result.newVersion!
+    };
+  }
+
+  // ── 11. Resubmit Application (Fase 6) ────────────────────────
+  async resubmitApplication(
+    applicationId: string,
+    user: { id: string; role: string },
+    expectedVersion?: number
+  ): Promise<{ registrationCode: string; version: number }> {
+    const app = await this.repo.findDetailById(applicationId);
+    if (!app) {
+      const err = new Error('Permohonan tidak ditemukan') as any;
+      err.statusCode = 404;
+      err.code = 'APPLICATION_NOT_FOUND';
+      throw err;
+    }
+    if (app.applicantId !== user.id) {
+      const err = new Error('Anda bukan pemilik permohonan ini') as any;
+      err.statusCode = 403;
+      err.code = 'FORBIDDEN';
+      throw err;
+    }
+    if (app.submissionStatus !== 'REVISION_REQUIRED') {
+      const err = new Error('Hanya permohonan berstatus REVISION_REQUIRED yang dapat dikirim ulang') as any;
+      err.statusCode = 400;
+      err.code = 'INVALID_SUBMISSION_STATUS';
+      throw err;
+    }
+
+    const result = await this.repo.resubmitApplication(applicationId, expectedVersion);
+    if (!result.success) {
+      const err = new Error('Konflik versi: Data permohonan telah diubah oleh sesi lain') as any;
+      err.statusCode = 409;
+      err.code = 'CONCURRENCY_CONFLICT';
+      throw err;
+    }
+
+    return {
+      registrationCode: result.registrationCode!,
+      version: result.newVersion!
+    };
   }
 
   // Guard: ensures application is in DRAFT/REVISION and belongs to user

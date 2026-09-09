@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import 'dotenv/config';
+try {
+  (process as any).loadEnvFile?.();
+} catch {
+  // Ignore in Docker or if .env is missing
+}
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -11,6 +15,7 @@ const envSchema = z.object({
   INTERNAL_SIGNING_KEY_FILE: z.string().optional(),
   INTERNAL_GATEWAY_URL: z.string().default('http://api-gateway:9080'),
   GATEWAY_ASSERTION_PUBLIC_KEY_FILE: z.string().optional(),
+  DB_POOL_LIMIT: z.coerce.number().default(5),
 });
 
 export const env = envSchema.parse(process.env);

@@ -13,3 +13,7 @@ applicationRouter.get('/:id', controller.getDetail);
 applicationRouter.put('/:id/sections/personal', controller.updatePersonal);
 applicationRouter.put('/:id/sections/education', controller.updateEducation);
 applicationRouter.put('/:id/sections/consent', controller.updateConsent);
+applicationRouter.post('/:id/document-reservations', controller.createReservation);
+applicationRouter.post('/:id/reservations', controller.createReservation);
+applicationRouter.post('/:id/submit', controller.submit);
+applicationRouter.post('/:id/resubmit', controller.resubmit);

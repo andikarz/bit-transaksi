@@ -12,6 +12,9 @@ declare global {
         permissions?: string[];
         isTempPassword?: boolean;
         serviceCaller?: string;
+        nik?: string;
+        fullName?: string;
+        email?: string;
       };
     }
   }
@@ -70,7 +73,10 @@ export function authenticateGatewayAssertion(required = true) {
         role: payload.role || 'PESERTA',
         permissions: payload.permissions || [],
         isTempPassword: payload.isTempPassword || false,
-        serviceCaller: payload.serviceCaller
+        serviceCaller: payload.serviceCaller,
+        nik: payload.nik,
+        fullName: payload.fullName,
+        email: payload.email
       };
 
       next();

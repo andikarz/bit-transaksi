@@ -122,9 +122,9 @@ export interface UpdatePersonalDto {
 export interface UpdateEducationDto {
   educationLevel: string;
   institutionName: string;
-  major?: string;
-  graduationYear?: number;
-  currentOccupation?: string;
+  major?: string | null;
+  graduationYear?: number | null;
+  currentOccupation?: string | null;
   expectedVersion?: number;
 }
 

@@ -6,6 +6,10 @@ import cookieParser from 'cookie-parser';
 import { env } from './config/env.js';
 import { healthRouter } from './modules/health/health.controller.js';
 import { applicationRouter } from './modules/applications/application.routes.js';
+import { internalRouter } from './modules/applications/internal.routes.js';
+import { reviewRouter } from './modules/reviews/review.routes.js';
+import { interviewRouter } from './modules/interviews/interview.routes.js';
+import { resultRouter } from './modules/results/result.routes.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { requestId } from './middleware/request-id.js';
 import { closePool } from './db/pool.js';
@@ -24,6 +28,19 @@ app.use('/health', healthRouter);
 
 // Application wizard & management routes
 app.use('/api/v1/applications', applicationRouter);
+
+// Review / verification routes (Fase 6)
+app.use('/api/v1/reviews', reviewRouter);
+
+// Interview / scoring routes (Fase 7)
+app.use('/api/v1/interviews', interviewRouter);
+
+// Admin results & export routes (Fase 8)
+app.use('/api/v1/results', resultRouter);
+app.use('/api/v1/reports', resultRouter);
+
+// Internal service-to-service routes (PRD §6)
+app.use('/internal/v1/transaksi', internalRouter);
 
 // Error handler
 app.use(errorHandler);

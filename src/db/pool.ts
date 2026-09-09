@@ -13,7 +13,7 @@ export function getPool(): Pool {
       password: decodeURIComponent(url.password),
       database: url.pathname.replace(/^\//, ''),
       waitForConnections: true,
-      connectionLimit: 10,
+      connectionLimit: env.DB_POOL_LIMIT,
       queueLimit: 0,
       connectTimeout: 5000,
       multipleStatements: false,
