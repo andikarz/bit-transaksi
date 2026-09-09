@@ -96,6 +96,21 @@ export interface ApplicationDetailResponse {
   educationDetails: Partial<EducationDetailsRecord>;
   consent: Partial<ConsentRecord> | null;
   documents: DocumentBindingRecord[];
+  review?: {
+    decision: string;
+    generalNotes: string | null;
+    createdAt: string | null;
+  } | null;
+  interviewScore?: {
+    scoreAspect1: number | null;
+    scoreAspect2: number | null;
+    scoreAspect3: number | null;
+    totalScore: number | null;
+    decision: string | null;
+    notes: string | null;
+    isFinalized: boolean;
+    createdAt: string | null;
+  } | null;
 }
 
 export interface CreateDraftDto {

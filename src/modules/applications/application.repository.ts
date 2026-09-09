@@ -135,6 +135,20 @@ export class ApplicationRepository {
       `SELECT * FROM document_bindings WHERE application_id = ?`,
       [id]
     );
+    const [reviewRows] = await pool.execute<RowDataPacket[]>(
+      `SELECT r.decision, r.general_notes, r.created_at 
+       FROM reviews r 
+       WHERE r.application_id = ? 
+       ORDER BY r.created_at DESC LIMIT 1`,
+      [id]
+    );
+    const [scoreRows] = await pool.execute<RowDataPacket[]>(
+      `SELECT i.score_aspect_1, i.score_aspect_2, i.score_aspect_3, i.total_score, i.decision, i.notes, i.is_finalized, i.created_at 
+       FROM interview_scores i 
+       WHERE i.application_id = ? 
+       ORDER BY i.created_at DESC LIMIT 1`,
+      [id]
+    );
 
     const snapshot = typeof app.program_snapshot === 'string'
       ? JSON.parse(app.program_snapshot)
@@ -158,7 +172,22 @@ export class ApplicationRepository {
       personalDetails: personalRows.length > 0 ? (personalRows[0] as PersonalDetailsRecord) : {},
       educationDetails: eduRows.length > 0 ? (eduRows[0] as EducationDetailsRecord) : {},
       consent: consentRows.length > 0 ? (consentRows[0] as ConsentRecord) : null,
-      documents: docRows as DocumentBindingRecord[]
+      documents: docRows as DocumentBindingRecord[],
+      review: reviewRows.length > 0 ? {
+        decision: (reviewRows[0] as any).decision,
+        generalNotes: (reviewRows[0] as any).general_notes || null,
+        createdAt: (reviewRows[0] as any).created_at ? new Date((reviewRows[0] as any).created_at).toISOString() : null
+      } : null,
+      interviewScore: scoreRows.length > 0 ? {
+        scoreAspect1: (scoreRows[0] as any).score_aspect_1 != null ? Number((scoreRows[0] as any).score_aspect_1) : null,
+        scoreAspect2: (scoreRows[0] as any).score_aspect_2 != null ? Number((scoreRows[0] as any).score_aspect_2) : null,
+        scoreAspect3: (scoreRows[0] as any).score_aspect_3 != null ? Number((scoreRows[0] as any).score_aspect_3) : null,
+        totalScore: (scoreRows[0] as any).total_score != null ? Number((scoreRows[0] as any).total_score) : null,
+        decision: (scoreRows[0] as any).decision || null,
+        notes: (scoreRows[0] as any).notes || null,
+        isFinalized: Boolean((scoreRows[0] as any).is_finalized),
+        createdAt: (scoreRows[0] as any).created_at ? new Date((scoreRows[0] as any).created_at).toISOString() : null
+      } : null
     };
   }
 
