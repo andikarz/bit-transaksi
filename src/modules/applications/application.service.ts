@@ -1,0 +1,218 @@
+import crypto from 'node:crypto';
+import { ApplicationRepository } from './application.repository.js';
+import {
+  CreateDraftDto,
+  UpdatePersonalDto,
+  UpdateEducationDto,
+  UpdateConsentDto,
+  ApplicationDetailResponse
+} from './application.types.js';
+import { env } from '../../config/env.js';
+
+export class ApplicationService {
+  private repo: ApplicationRepository;
+
+  constructor() {
+    this.repo = new ApplicationRepository();
+  }
+
+  // ── 1. Create or Resume Application Draft (AT-04) ────────────
+  async createDraft(
+    applicant: { id: string; nik: string; fullName: string; email: string },
+    dto: CreateDraftDto,
+    idempotencyKey?: string,
+    routePath = '/api/v1/applications'
+  ): Promise<{ data: ApplicationDetailResponse; isCached?: boolean }> {
+    const requestHash = crypto
+      .createHash('sha256')
+      .update(JSON.stringify(dto))
+      .digest('hex');
+
+    // AT-04: Check existing idempotency record
+    if (idempotencyKey) {
+      const cached = await this.repo.checkIdempotency(idempotencyKey, applicant.id);
+      if (cached) {
+        return { data: cached.body.data || cached.body, isCached: true };
+      }
+    }
+
+    // Check if applicant already has an active draft for any program (or this program)
+    const existingDraft = await this.repo.findActiveDraft(applicant.id);
+    if (existingDraft && existingDraft.program_id === dto.programId) {
+      const detail = await this.repo.findDetailById(existingDraft.id);
+      if (detail) {
+        if (idempotencyKey) {
+          await this.repo.saveIdempotency(
+            idempotencyKey,
+            applicant.id,
+            routePath,
+            requestHash,
+            200,
+            { data: detail }
+          );
+        }
+        return { data: detail };
+      }
+    }
+
+    // Fetch frozen program snapshot from Master via Gateway internal :9080
+    let programSnapshot: any = {
+      programId: dto.programId,
+      code: 'PROG-DEFAULT',
+      name: 'Program Beasiswa Pelatihan',
+      version: 1,
+      quota: 100,
+      requirements: []
+    };
+
+    try {
+      const gatewayUrl = env.INTERNAL_GATEWAY_URL || 'http://api-gateway:9080';
+      const response = await fetch(`${gatewayUrl}/internal/v1/master/program-snapshots/${dto.programId}`, {
+        headers: {
+          'x-caller-service': 'bit-transaksi'
+        }
+      });
+      if (response.ok) {
+        programSnapshot = await response.json();
+      }
+    } catch {
+      // If gateway is starting or offline, use base program snapshot
+    }
+
+    const applicationId = await this.repo.createDraft(applicant, dto.programId, programSnapshot);
+    const detail = await this.repo.findDetailById(applicationId);
+
+    if (!detail) {
+      throw new Error('Gagal memuat rincian draft permohonan yang baru dibuat');
+    }
+
+    // Cache idempotency response (AT-04)
+    if (idempotencyKey) {
+      await this.repo.saveIdempotency(
+        idempotencyKey,
+        applicant.id,
+        routePath,
+        requestHash,
+        201,
+        { data: detail }
+      );
+    }
+
+    return { data: detail };
+  }
+
+  // ── 2. Get Active Draft for Current Applicant ────────────────
+  async getMyActiveDraft(applicantId: string): Promise<ApplicationDetailResponse | null> {
+    const draft = await this.repo.findActiveDraft(applicantId);
+    if (!draft) return null;
+    return this.repo.findDetailById(draft.id);
+  }
+
+  // ── 3. Get Application Detail with Access Guard ──────────────
+  async getApplicationDetail(
+    applicationId: string,
+    user: { id: string; role: string }
+  ): Promise<ApplicationDetailResponse> {
+    const detail = await this.repo.findDetailById(applicationId);
+    if (!detail) {
+      const err = new Error('Permohonan beasiswa tidak ditemukan') as any;
+      err.statusCode = 404;
+      err.code = 'APPLICATION_NOT_FOUND';
+      throw err;
+    }
+
+    // Security: Only owner or internal staff can view detail
+    const isStaff = ['ADMIN', 'VERIFIKATOR', 'LEMBAGA_SELEKSI'].includes(user.role);
+    if (!isStaff && detail.applicantId !== user.id) {
+      const err = new Error('Anda tidak berhak mengakses permohonan ini') as any;
+      err.statusCode = 403;
+      err.code = 'FORBIDDEN';
+      throw err;
+    }
+
+    return detail;
+  }
+
+  // ── 4. Update Personal Details (AT-05) ────────────────────────
+  async updatePersonalDetails(
+    applicationId: string,
+    user: { id: string; role: string },
+    dto: UpdatePersonalDto
+  ): Promise<{ version: number }> {
+    await this.verifyDraftOwnership(applicationId, user.id);
+
+    const result = await this.repo.updatePersonalDetails(applicationId, dto);
+    if (!result.success) {
+      const err = new Error('Konflik versi: Data permohonan telah diubah oleh sesi lain') as any;
+      err.statusCode = 409;
+      err.code = 'CONCURRENCY_CONFLICT';
+      throw err;
+    }
+
+    return { version: result.newVersion! };
+  }
+
+  // ── 5. Update Education Details (AT-05) ───────────────────────
+  async updateEducationDetails(
+    applicationId: string,
+    user: { id: string; role: string },
+    dto: UpdateEducationDto
+  ): Promise<{ version: number }> {
+    await this.verifyDraftOwnership(applicationId, user.id);
+
+    const result = await this.repo.updateEducationDetails(applicationId, dto);
+    if (!result.success) {
+      const err = new Error('Konflik versi: Data permohonan telah diubah oleh sesi lain') as any;
+      err.statusCode = 409;
+      err.code = 'CONCURRENCY_CONFLICT';
+      throw err;
+    }
+
+    return { version: result.newVersion! };
+  }
+
+  // ── 6. Update Consent & Statement (AT-05) ─────────────────────
+  async updateConsent(
+    applicationId: string,
+    user: { id: string; role: string },
+    dto: UpdateConsentDto,
+    clientIp: string
+  ): Promise<{ version: number }> {
+    await this.verifyDraftOwnership(applicationId, user.id);
+
+    const result = await this.repo.updateConsent(applicationId, dto, clientIp);
+    if (!result.success) {
+      const err = new Error('Konflik versi: Data permohonan telah diubah oleh sesi lain') as any;
+      err.statusCode = 409;
+      err.code = 'CONCURRENCY_CONFLICT';
+      throw err;
+    }
+
+    return { version: result.newVersion! };
+  }
+
+  // Guard: ensures application is in DRAFT/REVISION and belongs to user
+  private async verifyDraftOwnership(applicationId: string, userId: string): Promise<void> {
+    const app = await this.repo.findDetailById(applicationId);
+    if (!app) {
+      const err = new Error('Permohonan tidak ditemukan') as any;
+      err.statusCode = 404;
+      err.code = 'APPLICATION_NOT_FOUND';
+      throw err;
+    }
+
+    if (app.applicantId !== userId) {
+      const err = new Error('Anda bukan pemilik permohonan ini') as any;
+      err.statusCode = 403;
+      err.code = 'FORBIDDEN';
+      throw err;
+    }
+
+    if (!['DRAFT', 'REVISION_REQUIRED'].includes(app.submissionStatus)) {
+      const err = new Error('Permohonan yang telah dikirim tidak dapat diubah kembali') as any;
+      err.statusCode = 400;
+      err.code = 'APPLICATION_LOCKED';
+      throw err;
+    }
+  }
+}

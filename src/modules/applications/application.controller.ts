@@ -1,0 +1,163 @@
+import { Request, Response, NextFunction } from 'express';
+import { ApplicationService } from './application.service.js';
+import {
+  createDraftSchema,
+  updatePersonalSchema,
+  updateEducationSchema,
+  updateConsentSchema
+} from './application.validator.js';
+
+export class ApplicationController {
+  private service: ApplicationService;
+
+  constructor() {
+    this.service = new ApplicationService();
+  }
+
+  createDraft = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Tidak terautentikasi' } });
+        return;
+      }
+
+      const body = createDraftSchema.parse(req.body);
+      const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
+
+      const applicant = {
+        id: req.user.id,
+        nik: (req.user as any).nik || '',
+        fullName: (req.user as any).fullName || '',
+        email: (req.user as any).email || ''
+      };
+
+      const result = await this.service.createDraft(
+        applicant,
+        body,
+        idempotencyKey,
+        req.originalUrl || req.path
+      );
+
+      res.status(result.isCached ? 200 : 201).json({
+        data: result.data,
+        message: 'Draft permohonan berhasil disiapkan',
+        requestId: req.headers['x-request-id'] || 'unknown'
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  getMyActive = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Tidak terautentikasi' } });
+        return;
+      }
+
+      const activeDraft = await this.service.getMyActiveDraft(req.user.id);
+      res.status(200).json({
+        data: activeDraft,
+        requestId: req.headers['x-request-id'] || 'unknown'
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  getDetail = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Tidak terautentikasi' } });
+        return;
+      }
+
+      const detail = await this.service.getApplicationDetail(req.params.id, {
+        id: req.user.id,
+        role: req.user.role
+      });
+
+      res.status(200).json({
+        data: detail,
+        requestId: req.headers['x-request-id'] || 'unknown'
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  updatePersonal = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Tidak terautentikasi' } });
+        return;
+      }
+
+      const body = updatePersonalSchema.parse(req.body);
+      const result = await this.service.updatePersonalDetails(
+        req.params.id,
+        { id: req.user.id, role: req.user.role },
+        body
+      );
+
+      res.status(200).json({
+        message: 'Data diri berhasil disimpan',
+        data: { version: result.version },
+        requestId: req.headers['x-request-id'] || 'unknown'
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  updateEducation = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Tidak terautentikasi' } });
+        return;
+      }
+
+      const body = updateEducationSchema.parse(req.body);
+      const result = await this.service.updateEducationDetails(
+        req.params.id,
+        { id: req.user.id, role: req.user.role },
+        body
+      );
+
+      res.status(200).json({
+        message: 'Data pendidikan berhasil disimpan',
+        data: { version: result.version },
+        requestId: req.headers['x-request-id'] || 'unknown'
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  updateConsent = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Tidak terautentikasi' } });
+        return;
+      }
+
+      const body = updateConsentSchema.parse(req.body);
+      const clientIp = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+
+      const result = await this.service.updateConsent(
+        req.params.id,
+        { id: req.user.id, role: req.user.role },
+        body,
+        clientIp
+      );
+
+      res.status(200).json({
+        message: 'Pernyataan persetujuan berhasil disimpan',
+        data: { version: result.version },
+        requestId: req.headers['x-request-id'] || 'unknown'
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+}
