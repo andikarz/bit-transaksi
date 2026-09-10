@@ -10,6 +10,7 @@ applicationRouter.use(authenticateGatewayAssertion(true));
 applicationRouter.post('/', controller.createDraft);
 applicationRouter.get('/my-active', controller.getMyActive);
 applicationRouter.get('/:id', controller.getDetail);
+applicationRouter.put('/:id/program', controller.updateProgram);
 applicationRouter.put('/:id/sections/personal', controller.updatePersonal);
 applicationRouter.put('/:id/sections/education', controller.updateEducation);
 applicationRouter.put('/:id/sections/consent', controller.updateConsent);

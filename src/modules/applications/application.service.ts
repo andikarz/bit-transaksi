@@ -16,6 +16,33 @@ export class ApplicationService {
     this.repo = new ApplicationRepository();
   }
 
+  // ── Helper: Fetch frozen program snapshot from Master service ──
+  private async fetchProgramSnapshot(programId: string): Promise<any> {
+    let programSnapshot: any = {
+      programId,
+      code: 'PROG-DEFAULT',
+      name: 'Program Beasiswa Pelatihan',
+      version: 1,
+      quota: 100,
+      requirements: []
+    };
+
+    try {
+      const gatewayUrl = env.INTERNAL_GATEWAY_URL || 'http://api-gateway:9080';
+      const response = await fetch(`${gatewayUrl}/internal/v1/master/program-snapshots/${programId}`, {
+        headers: {
+          'x-caller-service': 'bit-transaksi'
+        }
+      });
+      if (response.ok) {
+        programSnapshot = await response.json();
+      }
+    } catch (err) {
+      console.warn('[bit-transaksi] Failed to fetch program snapshot:', err);
+    }
+    return programSnapshot;
+  }
+
   // ── 1. Create or Resume Application Draft (AT-04) ────────────
   async createDraft(
     applicant: { id: string; nik: string; fullName: string; email: string },
@@ -39,6 +66,12 @@ export class ApplicationService {
     // Check if applicant already has an existing application (draft or submitted)
     const existingApp = await this.repo.findLatestApplication(applicant.id);
     if (existingApp) {
+      // If application is still DRAFT and requested programId differs, switch draft to the new program
+      if (existingApp.submission_status === 'DRAFT' && dto.programId && existingApp.program_id !== dto.programId) {
+        const newSnapshot = await this.fetchProgramSnapshot(dto.programId);
+        await this.repo.updateDraftProgram(existingApp.id, dto.programId, newSnapshot);
+      }
+
       const detail = await this.repo.findDetailById(existingApp.id);
       if (detail) {
         if (idempotencyKey) {
@@ -56,28 +89,7 @@ export class ApplicationService {
     }
 
     // Fetch frozen program snapshot from Master via Gateway internal :9080
-    let programSnapshot: any = {
-      programId: dto.programId,
-      code: 'PROG-DEFAULT',
-      name: 'Program Beasiswa Pelatihan',
-      version: 1,
-      quota: 100,
-      requirements: []
-    };
-
-    try {
-      const gatewayUrl = env.INTERNAL_GATEWAY_URL || 'http://api-gateway:9080';
-      const response = await fetch(`${gatewayUrl}/internal/v1/master/program-snapshots/${dto.programId}`, {
-        headers: {
-          'x-caller-service': 'bit-transaksi'
-        }
-      });
-      if (response.ok) {
-        programSnapshot = await response.json();
-      }
-    } catch {
-      // If gateway is starting or offline, use base program snapshot
-    }
+    const programSnapshot = await this.fetchProgramSnapshot(dto.programId);
 
     const applicationId = await this.repo.createDraft(applicant, dto.programId, programSnapshot);
     const detail = await this.repo.findDetailById(applicationId);
@@ -99,6 +111,44 @@ export class ApplicationService {
     }
 
     return { data: detail };
+  }
+
+  // ── Switch/Change Program for Draft Application ──────────────
+  async changeDraftProgram(
+    applicationId: string,
+    user: { id: string; role: string },
+    programId: string
+  ): Promise<ApplicationDetailResponse> {
+    const detail = await this.repo.findDetailById(applicationId);
+    if (!detail) {
+      const err = new Error('Permohonan beasiswa tidak ditemukan') as any;
+      err.statusCode = 404;
+      err.code = 'APPLICATION_NOT_FOUND';
+      throw err;
+    }
+
+    if (detail.applicantId !== user.id && user.role !== 'ADMIN') {
+      const err = new Error('Anda tidak berhak mengubah permohonan ini') as any;
+      err.statusCode = 403;
+      err.code = 'FORBIDDEN';
+      throw err;
+    }
+
+    if (detail.submissionStatus !== 'DRAFT') {
+      const err = new Error('Pilihan program beasiswa tidak dapat diubah karena berkas pendaftaran telah dikirimkan') as any;
+      err.statusCode = 400;
+      err.code = 'APPLICATION_ALREADY_SUBMITTED';
+      throw err;
+    }
+
+    const programSnapshot = await this.fetchProgramSnapshot(programId);
+    await this.repo.updateDraftProgram(applicationId, programId, programSnapshot);
+
+    const updated = await this.repo.findDetailById(applicationId);
+    if (!updated) {
+      throw new Error('Gagal memuat rincian permohonan setelah pembaruan program');
+    }
+    return updated;
   }
 
   // ── 2. Get Active or Submitted Application for Current Applicant ──

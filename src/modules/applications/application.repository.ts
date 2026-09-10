@@ -254,6 +254,17 @@ export class ApplicationRepository {
     });
   }
 
+  // ── Update Draft Program & Snapshot ──────────────────────────
+  async updateDraftProgram(applicationId: string, programId: string, programSnapshot: any): Promise<void> {
+    const pool = getPool();
+    await pool.execute(
+      `UPDATE applications 
+       SET program_id = ?, program_snapshot = ?, updated_at = NOW() 
+       WHERE id = ? AND submission_status = 'DRAFT'`,
+      [programId, JSON.stringify(programSnapshot), applicationId]
+    );
+  }
+
   // ── Update Personal Details with Optimistic Locking (AT-05) ──
   async updatePersonalDetails(
     applicationId: string,

@@ -65,6 +65,31 @@ export class ApplicationController {
     }
   };
 
+  updateProgram = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Tidak terautentikasi' } });
+        return;
+      }
+
+      const { id } = req.params;
+      const { programId } = req.body;
+      if (!programId) {
+        res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'programId wajib diisi' } });
+        return;
+      }
+
+      const updated = await this.service.changeDraftProgram(id as string, req.user, programId);
+      res.status(200).json({
+        data: updated,
+        message: 'Pilihan program beasiswa berhasil diperbarui',
+        requestId: req.headers['x-request-id'] || 'unknown'
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
+
   getDetail = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!req.user) {
